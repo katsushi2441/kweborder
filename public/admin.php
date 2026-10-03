@@ -214,7 +214,7 @@ if ($p === 'order') {
               . '<div><label for="tracking">送り状番号（任意）</label><input id="tracking" name="tracking" value="' . h($o['tracking']) . '"></div><div></div>' . $carriers : '')
            . '<div class="row" style="grid-column:1/-1">';
         foreach ($next as $to) { echo '<button class="btn' . (in_array($to, ['cancelled', 'declined'], true) ? ' red' : '') . '" name="to" value="' . h($to) . '">' . h(KWO_STATUS[$to]) . 'にする</button>'; }
-        echo '</div></form><p class="note">' . ($o['status'] === 'requested' ? '「受注済」にした時点で注文が成立し、取引先にメールが届きます。' : '状態を変えると取引先にメールが届きます。出荷予定日・運送会社・送り状番号を入れていれば、メールにも書きます。') . '</p></div>';
+        echo '</div></form><p class="note">' . ($o['status'] === 'requested' ? '「受注済」にした時点で注文が成立し、取引先にメールが届きます。得意先が自分で取り消せるのは受注済にする前まで、商社は出荷済にする前までキャンセルできます。' : '状態を変えると取引先にメールが届きます。出荷予定日・運送会社・送り状番号を入れていれば、メールにも書きます。' . (in_array('cancelled', $next, true) ? '出荷済にする前まではキャンセルできます。' : '')) . '</p></div>';
     }
     if (in_array($o['status'], ['accepted', 'preparing', 'shipped', 'done'], true)) {
         echo '<h2>出荷の情報だけを直す（状態は変えない・メールしない）</h2><div class="card"><form method="post" class="grid2">' . csrf_field() . '<input type="hidden" name="a" value="shipinfo"><input type="hidden" name="id" value="' . (int)$o['id'] . '">'

@@ -257,7 +257,9 @@ if ($p === 'history' || $p === 'view') {
         foreach ($lg as $g) { echo '<li>' . h($g['at']) . ' ' . badge($g['status']) . ($g['memo'] ? ' ' . h($g['memo']) : '') . '</li>'; }
         echo '</ul></div>';
         if ($o['status'] === 'requested') {
-            echo '<form method="post" onsubmit="return confirm(\'この注文を取り消しますか？\')">' . csrf_field() . '<input type="hidden" name="a" value="cancel"><input type="hidden" name="id" value="' . (int)$o['id'] . '"><button class="btn ghost">注文を取り消す（受注済になる前だけ）</button></form>';
+            echo '<form method="post" onsubmit="return confirm(\'この注文を取り消しますか？\')">' . csrf_field() . '<input type="hidden" name="a" value="cancel"><input type="hidden" name="id" value="' . (int)$o['id'] . '"><button class="btn ghost">注文を取り消す</button> <span class="note">商社が受注済にする前まで取り消せます。</span></form>';
+        } elseif (in_array($o['status'], ['accepted', 'preparing'], true)) {
+            echo '<p class="note">受注済になった注文は、ここでは取り消せません。取り消しや変更は商社に連絡してください（出荷前なら商社がキャンセルできます）。</p>';
         }
         page_foot(); exit;
     }

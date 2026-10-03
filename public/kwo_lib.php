@@ -35,6 +35,7 @@ const KWO_STATUS = [
 /** ステータスごとに、次に進められる先 */
 const KWO_NEXT = [
     'requested' => ['accepted', 'declined', 'cancelled'],
+    // キャンセル：得意先は「受注済」になる前（注文受付）だけ（index.php で制限）。商社は「出荷済」にする前までできる
     'accepted'  => ['preparing', 'cancelled'],
     'preparing' => ['shipped', 'cancelled'],
     'shipped'   => ['done'],
