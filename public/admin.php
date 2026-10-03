@@ -7,7 +7,7 @@ require __DIR__ . '/kwo_lib.php';
 sess();
 db();
 $p = (string)($_GET['p'] ?? 'orders');
-$NAV = [['admin.php?p=orders', '受注'], ['admin.php?p=companies', '取引先'], ['admin.php?p=products', '商品'], ['admin.php?p=logout', 'ログアウト']];
+$NAV = [['admin.php?p=orders', '受注'], ['admin.php?p=new', '代理入力'], ['admin.php?p=companies', '取引先'], ['admin.php?p=products', '商品'], ['admin.php?p=logout', 'ログアウト']];
 $HEAD = ['admin' => true, 'home' => 'admin.php', 'nav' => $NAV];
 
 function is_admin(): bool { return !empty($_SESSION['admin']); }
@@ -27,11 +27,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if ($a === 'status') {
             $oid = (int)$_POST['id']; $to = (string)$_POST['to'];
             set_status($oid, $to, 'admin', trim((string)($_POST['memo'] ?? '')), trim((string)($_POST['tracking'] ?? '')));
-            $st = db()->prepare('SELECT o.no, o.tracking, u.email, u.name FROM orders o JOIN users u ON u.id=o.user_id WHERE o.id=?'); $st->execute([$oid]); $o = $st->fetch();
+            $st = db()->prepare('SELECT o.no, o.tracking, u.email, u.name FROM orders o LEFT JOIN users u ON u.id=o.user_id WHERE o.id=?'); $st->execute([$oid]); $o = $st->fetch();
             $msg = ['accepted' => "ご注文 {$o['no']} を受注しました。出荷の手配を進めます。", 'preparing' => "ご注文 {$o['no']} の出荷を手配しています。",
                     'shipped' => "ご注文 {$o['no']} を出荷しました。" . ($o['tracking'] ? "送り状番号：{$o['tracking']}" : ''), 'declined' => "ご注文 {$o['no']} は、お受けできませんでした。詳しくはご連絡します。",
                     'cancelled' => "ご注文 {$o['no']} を取り消しました。"][$to] ?? '';
-            if ($msg) { send_mail($o['email'], '【' . cfg('site') . '】' . KWO_STATUS[$to] . '（' . $o['no'] . '）', "{$o['name']} 様\n\n{$msg}\n" . base_url() . '?p=view&id=' . $oid); }
+            if ($msg && $o['email']) { send_mail($o['email'], '【' . cfg('site') . '】' . KWO_STATUS[$to] . '（' . $o['no'] . '）', "{$o['name']} 様\n\n{$msg}\n" . base_url() . '?p=view&id=' . $oid); }
             flash('「' . KWO_STATUS[$to] . '」にしました。'); go('admin.php?p=order&id=' . $oid);
         }
         if ($a === 'bulk_accept') {
@@ -76,6 +76,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
             db()->commit(); flash($n . '件の商品を取り込みました。'); go('admin.php?p=products');
         }
+        if ($a === 'proxy_order') {
+            $cid = (int)$_POST['company'];
+            $st = db()->prepare("SELECT status FROM companies WHERE id=?"); $st->execute([$cid]);
+            if ($st->fetchColumn() !== 'active') { throw new RuntimeException('利用中の取引先を選んでください'); }
+            $uid = (int)($_POST['user'] ?? 0);
+            if ($uid) { $st = db()->prepare('SELECT 1 FROM users WHERE id=? AND company_id=?'); $st->execute([$uid, $cid]); if (!$st->fetchColumn()) { $uid = 0; } }
+            $src = (string)$_POST['source']; if (!isset(SOURCE_LABEL[$src]) || $src === 'web') { $src = 'other'; }
+            $lines = [];
+            foreach ((array)($_POST['code'] ?? []) as $i => $code) { $lines[] = [$code, (float)str_replace(',', '', (string)($_POST['qty'][$i] ?? '0')), $_POST['price'][$i] ?? '']; }
+            $oid = create_order($cid, $uid, (int)$_POST['shipto'], $lines, trim((string)$_POST['want']), trim((string)$_POST['po']), trim((string)$_POST['note']),
+                $src, (string)($_POST['free_ship'] ?? ''), 'admin');
+            if (($_POST['initial'] ?? '') === 'accepted') { set_status($oid, 'accepted', 'admin', '代理入力と同時に受注'); }
+            flash('代理入力で受注を登録しました。'); go('admin.php?p=order&id=' . $oid);
+        }
+        if ($a === 'company_add') {
+            $name = trim((string)$_POST['name']);
+            if ($name === '') { throw new RuntimeException('会社名を入れてください'); }
+            db()->prepare('INSERT INTO companies(code,name,tel,status,invite_code,created,approved) VALUES(?,?,?,?,?,?,?)')
+              ->execute([trim((string)$_POST['code']) ?: null, $name, trim((string)$_POST['tel']), 'active', rand_code(8), now(), now()]);
+            flash('取引先を追加しました。招待コードを伝えれば、得意先の人が自分で登録できます。'); go('admin.php?p=company&id=' . db()->lastInsertId());
+        }
         if ($a === 'note') {
             db()->prepare('UPDATE orders SET admin_note=? WHERE id=?')->execute([trim((string)$_POST['admin_note']), (int)$_POST['id']]);
             flash('社内メモを保存しました。'); go('admin.php?p=order&id=' . (int)$_POST['id']);
@@ -92,7 +113,41 @@ if (!is_admin()) {
     page_head('商社の管理画面｜' . cfg('site'), ['admin' => true, 'home' => 'admin.php']);
     echo '<h1>商社の管理画面</h1><div class="card" style="max-width:460px"><form method="post">' . csrf_field() . '<input type="hidden" name="a" value="login">'
        . '<label for="user">ID</label><input id="user" name="user" required' . (cfg('demo') ? ' value="admin"' : '') . '><label for="pass">パスワード</label><input id="pass" name="pass" type="password" required' . (cfg('demo') ? ' value="demo2026"' : '') . '>'
-       . '<p style="margin-top:12px"><button class="btn">ログイン</button></p></form>' . (cfg('demo') ? '<p class="note">デモ：admin ／ demo2026（入力済み）。取引先の画面は <a href="./">こちら</a></p>' : '') . '</div>';
+       . '<p style="margin-top:12px"><button class="btn">ログイン</button></p></form>' . (cfg('demo') ? '<p class="note">デモ：admin ／ demo2026（入力済み）。得意先の画面は <a href="./">こちら</a></p>' : '') . '</div>';
+    page_foot(); exit;
+}
+
+/* ---------- 品番の候補（代理入力用。得意先の価格で返す） ---------- */
+if ($p === 'suggest') {
+    header('Content-Type: application/json; charset=utf-8');
+    $cid = (int)($_GET['c'] ?? 0); $q = trim((string)($_GET['q'] ?? ''));
+    $st = db()->prepare('SELECT code, name, unit FROM products WHERE active=1 AND (code LIKE ? OR name LIKE ?) ORDER BY code LIMIT 12');
+    $st->execute([$q . '%', '%' . $q . '%']);
+    $out = [];
+    foreach ($st as $r) { [$pr, $src] = price_for($cid, $r['code']); $out[] = $r + ['price' => $pr, 'src' => $src]; }
+    echo json_encode($out, JSON_UNESCAPED_UNICODE); exit;
+}
+
+/* ---------- 代理入力（FAX・電話で来た注文を商社が登録） ---------- */
+if ($p === 'new') {
+    page_head('代理入力｜管理', $HEAD);
+    $cs = db()->query("SELECT id, name, code FROM companies WHERE status='active' ORDER BY name")->fetchAll();
+    $cid = (int)($_GET['c'] ?? 0);
+    echo '<h1>代理入力（FAX・電話で届いた注文を登録）</h1><form method="get" class="card filters"><input type="hidden" name="p" value="new"><div style="min-width:260px"><label for="c">取引先</label><select id="c" name="c" onchange="this.form.submit()"><option value="">選んでください</option>';
+    foreach ($cs as $c) { echo '<option value="' . (int)$c['id'] . '"' . ($cid === (int)$c['id'] ? ' selected' : '') . '>' . h($c['name']) . ($c['code'] ? '（' . h($c['code']) . '）' : '') . '</option>'; }
+    echo '</select></div><div><a class="btn ghost sm" href="admin.php?p=companies#add">取引先を追加</a></div></form>';
+    if (!$cid) { echo '<p class="note">取引先を選ぶと、その取引先の価格と出荷先で入力できます。WEBに登録していない取引先も「取引先を追加」で作れます。</p>'; page_foot(); exit; }
+    $us = db()->prepare('SELECT id, name, email FROM users WHERE company_id=? AND active=1'); $us->execute([$cid]);
+    $sh = db()->prepare('SELECT * FROM shipto WHERE company_id=? ORDER BY is_default DESC, id'); $sh->execute([$cid]);
+    echo '<form method="post">' . csrf_field() . '<input type="hidden" name="a" value="proxy_order"><input type="hidden" name="company" value="' . $cid . '">'
+       . lines_ui('admin.php?p=suggest&c=' . $cid, '得意先別の価格があればそれ、無ければ標準単価が入ります。どちらも無い品番は単価を入れてください。')
+       . '<div class="grid2"><div class="card">' . shipto_ui($sh->fetchAll()) . '</div><div class="card">'
+       . '<label for="source">注文が届いた方法</label><select id="source" name="source"><option value="fax">FAX</option><option value="tel">電話</option><option value="mail">メール</option><option value="other">その他</option></select>'
+       . '<label for="user">注文者（得意先の人）</label><select id="user" name="user"><option value="0">指定しない</option>';
+    foreach ($us as $u) { echo '<option value="' . (int)$u['id'] . '">' . h($u['name'] . '（' . $u['email'] . '）') . '</option>'; }
+    echo '</select><label for="want">希望納期</label><input id="want" name="want" type="date"><label for="po">得意先の注文番号</label><input id="po" name="po"><label for="note">備考</label><textarea id="note" name="note" rows="2"></textarea>'
+       . '<label for="initial">登録したときの状態</label><select id="initial" name="initial"><option value="accepted">受注済（注文を成立させる）</option><option value="requested">注文受付（あとで確かめる）</option></select></div></div>'
+       . '<p><button class="btn">この内容で受注を登録する</button> <span class="note">得意先の注文履歴にも出ます。</span></p></form>';
     page_foot(); exit;
 }
 
@@ -120,12 +175,12 @@ function order_filter(): array
 }
 
 if ($p === 'order') {
-    $st = db()->prepare('SELECT o.*, c.name cname, c.code ccode, u.name uname, u.email uemail FROM orders o JOIN companies c ON c.id=o.company_id JOIN users u ON u.id=o.user_id WHERE o.id=?');
+    $st = db()->prepare('SELECT o.*, c.name cname, c.code ccode, u.name uname, u.email uemail FROM orders o JOIN companies c ON c.id=o.company_id LEFT JOIN users u ON u.id=o.user_id WHERE o.id=?');
     $st->execute([(int)($_GET['id'] ?? 0)]); $o = $st->fetch();
     if (!$o) { http_response_code(404); page_head('見つかりません', $HEAD); echo '<h1>注文が見つかりません</h1>'; page_foot(); exit; }
     page_head('受注 ' . $o['no'] . '｜管理', $HEAD);
     echo '<p><a href="admin.php?p=orders">← 受注一覧</a></p><h1>受注 ' . h($o['no']) . ' ' . badge($o['status']) . '</h1>';
-    echo '<div class="grid2"><div class="card"><b>' . h($o['cname']) . '</b>（' . h($o['ccode'] ?: 'コード未設定') . '）<br>注文者 ' . h($o['uname']) . '（' . h($o['uemail']) . '）<br>注文日時 ' . h($o['created'])
+    echo '<div class="grid2"><div class="card"><b>' . h($o['cname']) . '</b>（' . h($o['ccode'] ?: 'コード未設定') . '）<br>注文者 ' . ($o['uname'] ? h($o['uname']) . '（' . h($o['uemail']) . '）' : '指定なし') . '<br>入力経路 <b>' . h(SOURCE_LABEL[$o['source']] ?? $o['source']) . '</b>' . ($o['source'] !== 'web' ? '（商社が代理入力）' : '') . '<br>注文日時 ' . h($o['created'])
        . '<br>希望納期 ' . h($o['want_date'] ?: '—') . '<br>得意先の注文番号 ' . h($o['customer_po'] ?: '—') . '<br>備考 ' . h($o['note'] ?: '—') . '</div>'
        . '<div class="card"><b>出荷先</b><br>' . h($o['ship_name']) . '<br>〒' . h($o['ship_zip']) . ' ' . h($o['ship_addr']) . '<br>' . h($o['ship_tel']) . ($o['tracking'] ? '<br>送り状番号 <b>' . h($o['tracking']) . '</b>' : '') . '</div></div>';
     echo '<div class="card tw"><table><tr><th>行</th><th>品番</th><th>品名</th><th class="n">数量</th><th>単位</th><th class="n">単価</th><th>単価の出どころ</th><th class="n">金額</th></tr>';
@@ -161,7 +216,9 @@ if ($p === 'companies') {
     echo '<h1>取引先</h1>' . ($pend ? '<div class="flash ng">承認待ちの取引先が' . $pend . '社あります。</div>' : '') . '<div class="card tw"><table><tr><th>取引先コード</th><th>会社名</th><th>状態</th><th class="n">人</th><th class="n">注文</th><th class="n">得意先別価格</th><th>登録日</th></tr>';
     $lab = ['pending' => '承認待ち', 'active' => '利用中', 'stopped' => '停止'];
     foreach ($rows as $c) { echo '<tr><td>' . h($c['code'] ?: '—') . '</td><td><a href="admin.php?p=company&id=' . (int)$c['id'] . '">' . h($c['name']) . '</a></td><td>' . h($lab[$c['status']] ?? $c['status']) . '</td><td class="n">' . (int)$c['users'] . '</td><td class="n">' . (int)$c['orders'] . '</td><td class="n">' . (int)$c['prices'] . '品番</td><td>' . h(substr((string)$c['created'], 0, 10)) . '</td></tr>'; }
-    echo '</table></div>';
+    echo '</table></div><h2 id="add">取引先を追加（WEBに登録していない得意先・代理入力用）</h2><div class="card"><form method="post" class="grid2">' . csrf_field() . '<input type="hidden" name="a" value="company_add">'
+       . '<div><label for="nname">会社名</label><input id="nname" name="name" required></div><div><label for="ncode">取引先コード</label><input id="ncode" name="code"></div>'
+       . '<div><label for="ntel">電話</label><input id="ntel" name="tel"></div><div style="align-self:end"><button class="btn">追加する（すぐ利用中）</button></div></form></div>';
     page_foot(); exit;
 }
 
@@ -224,7 +281,7 @@ echo '</select></div><div><label for="from">注文日（から）</label><input 
 echo '<form method="post">' . csrf_field() . '<input type="hidden" name="a" value="bulk_accept"><div class="card tw"><table><tr><th></th><th>受注番号</th><th>注文日時</th><th>状態</th><th>取引先</th><th>出荷先</th><th>希望納期</th><th class="n">行</th><th class="n">合計</th></tr>';
 foreach ($rows as $o) {
     echo '<tr><td>' . ($o['status'] === 'requested' ? '<input type="checkbox" name="ids[]" value="' . (int)$o['id'] . '" style="width:auto" aria-label="選ぶ">' : '') . '</td><td><a href="admin.php?p=order&id=' . (int)$o['id'] . '">' . h($o['no']) . '</a></td><td>' . h($o['created']) . '</td><td>' . badge($o['status'])
-       . ($o['cust'] ? ' <span class="src-customer" title="取引先が単価を入力した行あり">単価要確認</span>' : '') . '</td><td>' . h($o['cname']) . '</td><td>' . h($o['ship_name']) . '</td><td>' . h($o['want_date'] ?: '—') . '</td><td class="n">' . (int)$o['n'] . '</td><td class="n">' . yen($o['total']) . '</td></tr>';
+       . ($o['cust'] ? ' <span class="src-customer" title="取引先が単価を入力した行あり">単価要確認</span>' : '') . '</td><td>' . h($o['cname']) . ($o['source'] !== 'web' ? ' <span class="note">' . h(SOURCE_LABEL[$o['source']] ?? '') . '</span>' : '') . '</td><td>' . h($o['ship_name']) . '</td><td>' . h($o['want_date'] ?: '—') . '</td><td class="n">' . (int)$o['n'] . '</td><td class="n">' . yen($o['total']) . '</td></tr>';
 }
 echo '</table>' . (!$rows ? '<p class="note">該当する注文はありません。</p>' : '') . '</div><p><button class="btn ghost sm">チェックした注文をまとめて受注済にする</button></p></form>';
 echo '<p class="note">CSV の列：' . h(implode('・', CSV_HEAD)) . '（明細1行が1行。BOM付き UTF-8 で Excel でも開けます）</p>';

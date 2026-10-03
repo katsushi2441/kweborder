@@ -131,6 +131,13 @@ function seed_demo(PDO $p): void
     create_order($cid, $uid, 1, [['A-101', 24], ['C-012', 30]], '2026-10-10', 'PO-1017', '午前中の納品を希望します。');
     $o2 = create_order($cid, $uid, 2, [['D-440', 3], ['H-830', 6]], '', '', '');
     set_status($o2, 'accepted', '商社（デモ）', '');
+    // FAX だけで注文してくる取引先（WEBの利用者なし）と、商社の代理入力の見本
+    $p->prepare("INSERT INTO companies(code,name,tel,status,invite_code,created,approved) VALUES(?,?,?,?,?,?,?)")
+      ->execute(['C0002', 'さくら食堂', '052-000-5678', 'active', 'SAKURA77', now(), now()]);
+    $c2 = (int)$p->lastInsertId();
+    $o3 = create_order($c2, 0, 0, [['A-101', 6], ['C-012', 5], ['D-440', 3]], '2026-10-05', '1018', '裏口に置いてください', 'fax',
+        "さくら食堂\n〒460-0008 名古屋市中区栄9-8-7\n電話 052-000-5678", 'admin');
+    set_status($o3, 'accepted', 'admin', '代理入力と同時に受注');
 }
 
 function demo_reset_if_old(PDO $p): void
@@ -214,18 +221,32 @@ function price_for(int $company_id, string $code): array
     if ($v !== false && $v !== null) { return [(int)$v, 'standard']; }
     return [null, 'customer'];
 }
+const SOURCE_LABEL = ['web' => 'WEB', 'fax' => 'FAX', 'tel' => '電話', 'mail' => 'メール', 'other' => 'その他'];
 const PRICE_SRC = ['master' => '得意先別', 'standard' => '標準', 'customer' => '得意先入力'];
 
 /**
  * 注文を作る。$lines = [[品番, 数量, (得意先が入れた単価)], ...]
  * 品番が商品マスタに無い行も受ける（品名は品番のまま・単価は得意先入力）。商社が確認して受注済にする。
  */
-function create_order(int $cid, int $uid, int $shipto_id, array $lines, string $want, string $po, string $note, string $source = 'web'): int
+function create_order(int $cid, int $uid, int $shipto_id, array $lines, string $want, string $po, string $note, string $source = 'web', string $free_ship = '', string $by = ''): int
 {
     $p = db();
-    $st = $p->prepare('SELECT * FROM shipto WHERE id=? AND company_id=?'); $st->execute([$shipto_id, $cid]);
-    $sh = $st->fetch();
-    if (!$sh) { throw new RuntimeException('出荷先を選んでください'); }
+    if ($shipto_id > 0) {
+        $st = $p->prepare('SELECT * FROM shipto WHERE id=? AND company_id=?'); $st->execute([$shipto_id, $cid]);
+        $sh = $st->fetch();
+        if (!$sh) { throw new RuntimeException('出荷先を選んでください'); }
+    } else {
+        // 出荷先をその場で自由に書く（登録しない）。1行目を宛名、残りを住所として持つ
+        $free = trim(str_replace("\r", '', $free_ship));
+        if ($free === '') { throw new RuntimeException('出荷先を選ぶか、出荷先を入力してください'); }
+        $ls = array_values(array_filter(array_map('trim', explode("\n", $free)), 'strlen'));
+        $zip = '';
+        foreach ($ls as $i => $l) { if (preg_match('/^〒?\s*(\d{3}-?\d{4})\s*(.*)$/u', $l, $m)) { $zip = $m[1]; $ls[$i] = $m[2]; } }
+        $tel = '';
+        foreach ($ls as $i => $l) { if (preg_match('/^(TEL|電話|Tel|tel)[:：\s]*([\d\-()]+)$/u', $l, $m)) { $tel = $m[2]; unset($ls[$i]); } }
+        $ls = array_values(array_filter($ls, 'strlen'));
+        $sh = ['name' => $ls[0] ?? $free, 'zip' => $zip, 'addr' => implode(' ', array_slice($ls, 1)) ?: ($ls[0] ?? ''), 'tel' => $tel];
+    }
     $p->beginTransaction();
     $no = date('ymd') . '-' . strtoupper(substr(bin2hex(random_bytes(3)), 0, 5));
     $p->prepare('INSERT INTO orders(no,company_id,user_id,ship_name,ship_zip,ship_addr,ship_tel,want_date,customer_po,note,status,created,updated,source)
@@ -247,7 +268,7 @@ function create_order(int $cid, int $uid, int $shipto_id, array $lines, string $
     }
     if ($n === 0) { $p->rollBack(); throw new RuntimeException('品番と数量を1行以上入れてください'); }
     $p->prepare('UPDATE orders SET total=? WHERE id=?')->execute([$total, $oid]);
-    $p->prepare('INSERT INTO status_log VALUES(?,?,?,?,?)')->execute([$oid, 'requested', now(), 'customer:' . $uid, '']);
+    $p->prepare('INSERT INTO status_log VALUES(?,?,?,?,?)')->execute([$oid, 'requested', now(), $by !== '' ? $by : 'customer:' . $uid, $source !== 'web' ? '商社が代理入力（' . (SOURCE_LABEL[$source] ?? $source) . '）' : '']);
     $p->commit();
     return $oid;
 }
@@ -271,22 +292,45 @@ function order_lines(int $oid): array
 
 /** CSV の列（この順・この名前で固定。基幹への取り込みはこの形に合わせてもらう） */
 const CSV_HEAD = ['受注番号', '注文日時', '状態', '受注日時', '取引先コード', '取引先名', '注文者', '注文者メール', '得意先注文番号',
-    '出荷先名', '出荷先郵便番号', '出荷先住所', '出荷先電話', '希望納期', '行', '品番', '品名', '数量', '単位', '単価', '単価の出どころ', '金額', '注文合計', '備考', '送り状番号'];
+    '出荷先名', '出荷先郵便番号', '出荷先住所', '出荷先電話', '希望納期', '行', '品番', '品名', '数量', '単位', '単価', '単価の出どころ', '金額', '注文合計', '備考', '送り状番号', '入力経路'];
 
 function csv_rows(array $where = [], array $args = []): Generator
 {
     $sql = "SELECT o.*, c.code ccode, c.name cname, u.name uname, u.email uemail,
               (SELECT at FROM status_log s WHERE s.order_id=o.id AND s.status='accepted' ORDER BY at DESC LIMIT 1) accepted_at
-            FROM orders o JOIN companies c ON c.id=o.company_id JOIN users u ON u.id=o.user_id"
+            FROM orders o JOIN companies c ON c.id=o.company_id LEFT JOIN users u ON u.id=o.user_id"
          . ($where ? ' WHERE ' . implode(' AND ', $where) : '') . ' ORDER BY o.created';
     $st = db()->prepare($sql); $st->execute($args);
     foreach ($st as $o) {
         foreach (order_lines((int)$o['id']) as $l) {
-            yield [$o['no'], $o['created'], KWO_STATUS[$o['status']] ?? $o['status'], $o['accepted_at'] ?? '', $o['ccode'], $o['cname'], $o['uname'], $o['uemail'],
+            yield [$o['no'], $o['created'], KWO_STATUS[$o['status']] ?? $o['status'], $o['accepted_at'] ?? '', $o['ccode'], $o['cname'], $o['uname'] ?? '（商社が代理入力）', $o['uemail'] ?? '',
                 $o['customer_po'], $o['ship_name'], $o['ship_zip'], $o['ship_addr'], $o['ship_tel'], $o['want_date'], $l['line'], $l['code'], $l['name'],
-                $l['qty'] + 0, $l['unit'], $l['price'], PRICE_SRC[$l['price_src']] ?? $l['price_src'], $l['amount'], $o['total'], $o['note'], $o['tracking']];
+                $l['qty'] + 0, $l['unit'], $l['price'], PRICE_SRC[$l['price_src']] ?? $l['price_src'], $l['amount'], $o['total'], $o['note'], $o['tracking'], SOURCE_LABEL[$o['source']] ?? $o['source']];
         }
     }
+}
+
+
+/** 品番で注文する行の入力欄（取引先の注文と、商社の代理入力で共通）。$suggest は候補のJSONを返すURL */
+function lines_ui(string $suggest, string $hint): string
+{
+    return '<div class="card tw"><table class="lines"><thead><tr><th style="width:150px">品番</th><th>品名</th><th style="width:100px">数量</th><th>単位</th><th style="width:130px">単価</th><th class="n">金額</th></tr></thead><tbody id="rows"></tbody></table>'
+        . '<p class="row" style="margin-top:8px"><button type="button" class="btn ghost sm" id="addrow">行を足す</button><span class="note">品番を途中まで打つと候補が出ます。' . h($hint) . '</span></p>'
+        . '<p style="text-align:right;font-weight:800">合計（税抜）<span id="total">0</span>円</p></div>'
+        . '<datalist id="codes"></datalist><script>var KWO_SUGGEST=' . json_encode($suggest) . ';' . LINES_JS . '</script>';
+}
+
+/** 出荷先：登録済みから選ぶか、その場で自由に書く（登録しない） */
+function shipto_ui(array $ships, string $manage = ''): string
+{
+    $h = '<label for="shipto">出荷先</label><select id="shipto" name="shipto">';
+    foreach ($ships as $s) { $h .= '<option value="' . (int)$s['id'] . '">' . h(($s['label'] ? $s['label'] . '：' : '') . $s['name'] . '（' . $s['addr'] . '）') . '</option>'; }
+    $h .= '<option value="0"' . ($ships ? '' : ' selected') . '>出荷先をここに書く（登録しない）</option></select>'
+        . '<div id="freebox"' . ($ships ? ' hidden' : '') . '><label for="free_ship">出荷先（1行目に宛名、続けて郵便番号・住所・電話）</label>'
+        . '<textarea id="free_ship" name="free_ship" rows="4" placeholder="株式会社〇〇 △△店&#10;〒460-0000 名古屋市中区…&#10;電話 052-000-0000"></textarea></div>'
+        . ($manage ? '<p class="note"><a href="' . h($manage) . '">よく使う出荷先を登録する</a></p>' : '')
+        . '<script>(function(){var s=document.getElementById("shipto"),b=document.getElementById("freebox");s.addEventListener("change",function(){b.hidden=s.value!=="0"})})();</script>';
+    return $h;
 }
 
 /* ---------------- 画面の枠 ---------------- */
@@ -354,3 +398,22 @@ footer{border-top:1px solid var(--line);background:#fff;font-size:12.5px;color:v
 .src-customer{color:#a05a00;font-weight:700}
 CSS;
 }
+
+const LINES_JS = '
+(function(){
+var rows=document.getElementById("rows"),dl=document.getElementById("codes"),cache={};
+function esc(s){return String(s==null?"":s).replace(/[&<>"]/g,function(c){return{"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c]})}
+function add(){var tr=document.createElement("tr");tr.innerHTML=\'<td><input name="code[]" list="codes" autocomplete="off" aria-label="品番"></td><td class="nm note">—</td><td><input name="qty[]" inputmode="decimal" aria-label="数量"></td><td class="un"></td><td><input name="price[]" inputmode="numeric" aria-label="単価"></td><td class="n am"></td>\';rows.appendChild(tr);bind(tr)}
+function sum(){var t=0;rows.querySelectorAll("tr").forEach(function(tr){var q=parseFloat(tr.querySelector("[name=\'qty[]\']").value)||0,p=parseFloat(tr.querySelector("[name=\'price[]\']").value)||0,a=Math.round(q*p);tr.querySelector(".am").textContent=a?a.toLocaleString("ja-JP"):"";t+=a});document.getElementById("total").textContent=t.toLocaleString("ja-JP")}
+function look(tr){var c=tr.querySelector("[name=\'code[]\']").value.trim(),pr=tr.querySelector("[name=\'price[]\']");if(!c){return}
+ var hit=cache[c];if(hit){tr.querySelector(".nm").textContent=hit.name;tr.querySelector(".un").textContent=hit.unit||"";if(hit.price!==null){pr.value=hit.price;pr.readOnly=true;pr.title=hit.src==="master"?"得意先別の価格":"標準単価"}else{pr.readOnly=false;pr.placeholder="単価を入力"}sum();return}
+ tr.querySelector(".nm").textContent="（商品マスタに無い品番：単価を入れてください）";pr.readOnly=false;sum()}
+function bind(tr){var ci=tr.querySelector("[name=\'code[]\']");
+ ci.addEventListener("input",function(){var q=ci.value.trim();if(q.length<1)return;fetch(KWO_SUGGEST+(KWO_SUGGEST.indexOf("?")<0?"?":"&")+"q="+encodeURIComponent(q)).then(function(r){return r.json()}).then(function(js){dl.innerHTML=js.map(function(x){cache[x.code]=x;return \'<option value="\'+esc(x.code)+\'">\'+esc(x.name)+(x.price!==null?" "+x.price+"円":"")+\'</option>\'}).join("");if(cache[q])look(tr)})});
+ ci.addEventListener("change",function(){look(tr)});
+ tr.querySelectorAll("input").forEach(function(i){i.addEventListener("input",sum)});
+ tr.querySelector("[name=\'qty[]\']").addEventListener("keydown",function(e){if(e.key==="Enter"){e.preventDefault();if(tr===rows.lastElementChild)add();rows.lastElementChild.querySelector("input").focus()}})}
+for(var i=0;i<5;i++)add();
+document.getElementById("addrow").addEventListener("click",add);
+})();
+';

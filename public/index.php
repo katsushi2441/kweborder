@@ -98,7 +98,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $lines[] = [$code, (float)str_replace(',', '', (string)($_POST['qty'][$i] ?? '0')), $_POST['price'][$i] ?? ''];
             }
             $oid = create_order((int)$me['company_id'], (int)$me['id'], (int)$_POST['shipto'], $lines,
-                trim((string)$_POST['want']), trim((string)$_POST['po']), trim((string)$_POST['note']));
+                trim((string)$_POST['want']), trim((string)$_POST['po']), trim((string)$_POST['note']), 'web', (string)($_POST['free_ship'] ?? ''));
             $st = db()->prepare('SELECT no FROM orders WHERE id=?'); $st->execute([$oid]); $no = $st->fetchColumn();
             send_mail($me['email'], '【' . cfg('site') . '】ご注文を受け付けました（' . $no . '）', "{$me['name']} 様\n\nご注文を受け付けました。{$no}\n商社が内容を確かめて「受注済」にした時点で注文が成立します。\n" . base_url() . '?p=view&id=' . $oid);
             if (cfg('admin_mail')) { send_mail((string)cfg('admin_mail'), '【WEB受注】新しい注文 ' . $no . '（' . $me['company'] . '）', base_url() . 'admin.php?p=order&id=' . $oid); }
@@ -182,20 +182,30 @@ if (!$me) {
             ['@type' => 'Question', 'name' => '取引先ごとに価格を変えられますか？', 'acceptedAnswer' => ['@type' => 'Answer', 'text' => '得意先別の価格を登録すればそれを使い、無ければ標準単価、どちらも無い品番は取引先が単価を入力します。どの単価を使ったかは受注に記録されます。']],
         ]]]];
     page_head('Kurage Web Order｜品番で注文できるBtoBのWEB受注（デモ）', ['nav' => $NAV_OUT, 'noindex' => false, 'og' => true, 'jsonld' => $ld]);
-    echo '<div class="grid2"><div><h1>取引先の方のログイン</h1><div class="card"><form method="post">' . csrf_field() . '<input type="hidden" name="a" value="login">'
-       . '<label for="email">メールアドレス</label><input id="email" name="email" type="email" required autocomplete="email"' . (cfg('demo') ? ' value="demo@example.com"' : '') . '>'
-       . '<label for="pass">パスワード</label><input id="pass" name="pass" type="password" required autocomplete="current-password"' . (cfg('demo') ? ' value="demo2026"' : '') . '>'
+    if (cfg('demo')) {
+        // デモの入口を2つ：発注する得意先の画面と、受注する商社の画面
+        echo '<h1>どちらの立場で試しますか？</h1><div class="grid2">'
+           . '<div class="card"><h2 style="margin-top:0">得意先（発注する側）として試す</h2><p class="note">品番で注文・出荷先を選ぶ・注文履歴を見る。デモの取引先「株式会社みなと食品」の佐藤さんとしてログインします。</p>'
+           . '<form method="post">' . csrf_field() . '<input type="hidden" name="a" value="login"><input type="hidden" name="email" value="demo@example.com"><input type="hidden" name="pass" value="demo2026"><button class="btn">得意先として試す</button></form>'
+           . '<p class="note" style="margin-top:8px">demo@example.com ／ demo2026</p></div>'
+           . '<div class="card"><h2 style="margin-top:0">商社（受注する側）として試す</h2><p class="note">受注一覧・受注済にする・出荷済にする・CSV・得意先の代わりに注文を登録（代理入力）・取引先と価格の管理。</p>'
+           . '<form method="post" action="admin.php">' . csrf_field() . '<input type="hidden" name="a" value="login"><input type="hidden" name="user" value="admin"><input type="hidden" name="pass" value="demo2026"><button class="btn">商社として試す</button></form>'
+           . '<p class="note" style="margin-top:8px">admin ／ demo2026</p></div></div>'
+           . '<p class="note">新しい会社として登録する流れを試すなら <a href="./?p=register">新規登録</a>（デモではメールを送らず、確認のリンクを画面に出します）。</p>';
+    }
+    echo '<div class="grid2"><div><h2>取引先の方のログイン</h2><div class="card"><form method="post">' . csrf_field() . '<input type="hidden" name="a" value="login">'
+       . '<label for="email">メールアドレス</label><input id="email" name="email" type="email" required autocomplete="email">'
+       . '<label for="pass">パスワード</label><input id="pass" name="pass" type="password" required autocomplete="current-password">'
        . '<p style="margin-top:12px" class="row"><button class="btn">ログイン</button> <a href="./?p=forgot">パスワードを忘れた</a></p></form></div>'
        . '<p>はじめての方は <a class="btn ghost sm" href="./?p=register">新規登録</a></p></div>'
-       . '<div><h1>このシステムでできること</h1><div class="card"><ul style="margin:0;padding-left:1.2em">'
+       . '<div><h2>このシステムでできること</h2><div class="card"><ul style="margin:0;padding-left:1.2em">'
        . '<li>メールアドレスをIDにして、取引先が自分で登録（同じ会社の人は招待コードで）</li>'
        . '<li>品番と数量を並べて注文。品番は途中まで打つと候補が出る</li>'
-       . '<li>出荷先を何か所か登録して、注文ごとに選ぶ</li>'
+       . '<li>出荷先は登録したものから選ぶか、その場で自由に書く</li>'
        . '<li>得意先別の価格 → 標準単価 → 取引先が入力、の順で単価を決める</li>'
        . '<li>商社が「受注済」にした時点で成立。出荷手配中・出荷済まで状態が見える</li>'
-       . '<li>商社側は受注一覧・ステータス管理・CSVで基幹へ</li></ul>'
-       . (cfg('demo') ? '<p class="note" style="margin-top:10px">デモの取引先：demo@example.com ／ demo2026（入力済み）。<br>商社の画面：<a href="admin.php">admin.php</a>（admin ／ demo2026）</p>' : '')
-       . '</div></div></div>';
+       . '<li>FAX・電話の注文は、商社が得意先の代わりに登録（代理入力）</li>'
+       . '<li>商社側は受注一覧・ステータス管理・CSVで基幹へ</li></ul></div></div></div>';
     page_foot(); exit;
 }
 
@@ -230,12 +240,12 @@ if ($p === 'members') {
 
 if ($p === 'history' || $p === 'view') {
     if ($p === 'view') {
-        $st = db()->prepare('SELECT o.*, u.name uname FROM orders o JOIN users u ON u.id=o.user_id WHERE o.id=? AND o.company_id=?'); $st->execute([(int)($_GET['id'] ?? 0), $cid]);
+        $st = db()->prepare('SELECT o.*, u.name uname FROM orders o LEFT JOIN users u ON u.id=o.user_id WHERE o.id=? AND o.company_id=?'); $st->execute([(int)($_GET['id'] ?? 0), $cid]);
         $o = $st->fetch();
         if (!$o) { http_response_code(404); page_head('見つかりません', ['nav' => $NAV_IN]); echo '<h1>注文が見つかりません</h1>'; page_foot(); exit; }
         page_head('注文 ' . $o['no'] . '｜' . cfg('site'), ['nav' => $NAV_IN]);
         echo '<h1>注文 ' . h($o['no']) . ' ' . badge($o['status']) . '</h1><div class="grid2"><div class="card"><b>出荷先</b><br>' . h($o['ship_name']) . '<br>〒' . h($o['ship_zip']) . ' ' . h($o['ship_addr']) . '<br>' . h($o['ship_tel']) . '</div>'
-           . '<div class="card">注文日時 ' . h($o['created']) . '<br>注文者 ' . h($o['uname']) . '<br>希望納期 ' . h($o['want_date'] ?: '—') . '<br>御社の注文番号 ' . h($o['customer_po'] ?: '—')
+           . '<div class="card">注文日時 ' . h($o['created']) . '<br>注文者 ' . h($o['uname'] ?? '商社が代理入力（' . (SOURCE_LABEL[$o['source']] ?? '') . '）') . '<br>希望納期 ' . h($o['want_date'] ?: '—') . '<br>御社の注文番号 ' . h($o['customer_po'] ?: '—')
            . ($o['tracking'] ? '<br>送り状番号 <b>' . h($o['tracking']) . '</b>' : '') . '<br>備考 ' . h($o['note'] ?: '—') . '</div></div>';
         echo '<div class="card tw"><table><tr><th>行</th><th>品番</th><th>品名</th><th class="n">数量</th><th>単位</th><th class="n">単価</th><th>単価の出どころ</th><th class="n">金額</th></tr>';
         foreach (order_lines((int)$o['id']) as $l) {
@@ -252,9 +262,9 @@ if ($p === 'history' || $p === 'view') {
         page_foot(); exit;
     }
     page_head('注文履歴｜' . cfg('site'), ['nav' => $NAV_IN]);
-    $st = db()->prepare('SELECT o.*, u.name uname, (SELECT COUNT(*) FROM order_lines l WHERE l.order_id=o.id) n FROM orders o JOIN users u ON u.id=o.user_id WHERE o.company_id=? ORDER BY o.id DESC LIMIT 200'); $st->execute([$cid]);
+    $st = db()->prepare('SELECT o.*, u.name uname, (SELECT COUNT(*) FROM order_lines l WHERE l.order_id=o.id) n FROM orders o LEFT JOIN users u ON u.id=o.user_id WHERE o.company_id=? ORDER BY o.id DESC LIMIT 200'); $st->execute([$cid]);
     echo '<h1>注文履歴（' . h($me['company']) . '）</h1><div class="card tw"><table><tr><th>受注番号</th><th>注文日時</th><th>状態</th><th>注文者</th><th>出荷先</th><th class="n">行</th><th class="n">合計</th></tr>';
-    foreach ($st as $o) { echo '<tr><td><a href="./?p=view&id=' . (int)$o['id'] . '">' . h($o['no']) . '</a></td><td>' . h($o['created']) . '</td><td>' . badge($o['status']) . '</td><td>' . h($o['uname']) . '</td><td>' . h($o['ship_name']) . '</td><td class="n">' . (int)$o['n'] . '</td><td class="n">' . yen($o['total']) . '</td></tr>'; }
+    foreach ($st as $o) { echo '<tr><td><a href="./?p=view&id=' . (int)$o['id'] . '">' . h($o['no']) . '</a></td><td>' . h($o['created']) . '</td><td>' . badge($o['status']) . '</td><td>' . h($o['uname'] ?? '商社が代理入力') . '</td><td>' . h($o['ship_name']) . '</td><td class="n">' . (int)$o['n'] . '</td><td class="n">' . yen($o['total']) . '</td></tr>'; }
     echo '</table></div>';
     page_foot(); exit;
 }
@@ -268,30 +278,8 @@ if ($pending) {
 }
 $st = db()->prepare('SELECT * FROM shipto WHERE company_id=? ORDER BY is_default DESC, id'); $st->execute([$cid]);
 $ships = $st->fetchAll();
-echo '<form method="post" id="of">' . csrf_field() . '<input type="hidden" name="a" value="order"><div class="card tw"><table class="lines"><thead><tr><th style="width:150px">品番</th><th>品名</th><th style="width:100px">数量</th><th>単位</th><th style="width:130px">単価</th><th class="n">金額</th></tr></thead><tbody id="rows"></tbody></table>'
-   . '<p class="row" style="margin-top:8px"><button type="button" class="btn ghost sm" id="addrow">行を足す</button><span class="note">品番を途中まで打つと候補が出ます。単価の決まっていない品番は、単価を入れてください（商社が確認します）。</span></p>'
-   . '<p style="text-align:right;font-weight:800">合計（税抜）<span id="total">0</span>円</p></div>';
-echo '<div class="grid2"><div class="card"><label for="shipto">出荷先</label><select id="shipto" name="shipto" required>';
-foreach ($ships as $s) { echo '<option value="' . (int)$s['id'] . '">' . h(($s['label'] ? $s['label'] . '：' : '') . $s['name'] . '（' . $s['addr'] . '）') . '</option>'; }
-echo '</select><p class="note"><a href="./?p=shipto">出荷先を足す・変える</a></p></div><div class="card"><label for="want">希望納期</label><input id="want" name="want" type="date">'
+echo '<form method="post" id="of">' . csrf_field() . '<input type="hidden" name="a" value="order">' . lines_ui('./?p=suggest', '単価の決まっていない品番は、単価を入れてください（商社が確認します）。');
+echo '<div class="grid2"><div class="card">' . shipto_ui($ships, './?p=shipto') . '</div><div class="card"><label for="want">希望納期</label><input id="want" name="want" type="date">'
    . '<label for="po">御社の注文番号（任意）</label><input id="po" name="po"><label for="note">備考</label><textarea id="note" name="note" rows="2"></textarea></div></div>';
 echo '<p><button class="btn">この内容で注文する</button> <span class="note">商社が「受注済」にした時点で注文が成立します。</span></p></form>';
-echo '<datalist id="codes"></datalist><script>
-(function(){
-var rows=document.getElementById("rows"),dl=document.getElementById("codes"),cache={};
-function esc(s){return String(s==null?"":s).replace(/[&<>"]/g,function(c){return{"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c]})}
-function add(){var tr=document.createElement("tr");tr.innerHTML=\'<td><input name="code[]" list="codes" autocomplete="off" aria-label="品番"></td><td class="nm note">—</td><td><input name="qty[]" inputmode="decimal" aria-label="数量"></td><td class="un"></td><td><input name="price[]" inputmode="numeric" aria-label="単価"></td><td class="n am"></td>\';rows.appendChild(tr);bind(tr)}
-function sum(){var t=0;rows.querySelectorAll("tr").forEach(function(tr){var q=parseFloat(tr.querySelector("[name=\'qty[]\']").value)||0,p=parseFloat(tr.querySelector("[name=\'price[]\']").value)||0,a=Math.round(q*p);tr.querySelector(".am").textContent=a?a.toLocaleString("ja-JP"):"";t+=a});document.getElementById("total").textContent=t.toLocaleString("ja-JP")}
-function look(tr){var c=tr.querySelector("[name=\'code[]\']").value.trim(),pr=tr.querySelector("[name=\'price[]\']");if(!c){return}
- var hit=cache[c];if(hit){tr.querySelector(".nm").textContent=hit.name;tr.querySelector(".un").textContent=hit.unit||"";if(hit.price!==null){pr.value=hit.price;pr.readOnly=true;pr.title=hit.src==="master"?"得意先別の価格":"標準単価"}else{pr.readOnly=false;pr.placeholder="単価を入力"}sum();return}
- tr.querySelector(".nm").textContent="（商品マスタに無い品番：単価を入れてください）";pr.readOnly=false;sum()}
-function bind(tr){var ci=tr.querySelector("[name=\'code[]\']");
- ci.addEventListener("input",function(){var q=ci.value.trim();if(q.length<1)return;fetch("./?p=suggest&q="+encodeURIComponent(q)).then(function(r){return r.json()}).then(function(js){dl.innerHTML=js.map(function(x){cache[x.code]=x;return \'<option value="\'+esc(x.code)+\'">\'+esc(x.name)+(x.price!==null?" "+x.price+"円":"")+\'</option>\'}).join("");if(cache[q])look(tr)})});
- ci.addEventListener("change",function(){look(tr)});
- tr.querySelectorAll("input").forEach(function(i){i.addEventListener("input",sum)});
- tr.querySelector("[name=\'qty[]\']").addEventListener("keydown",function(e){if(e.key==="Enter"){e.preventDefault();if(tr===rows.lastElementChild)add();rows.lastElementChild.querySelector("input").focus()}})}
-for(var i=0;i<5;i++)add();
-document.getElementById("addrow").addEventListener("click",add);
-})();
-</script>';
 page_foot();
