@@ -246,7 +246,7 @@ if ($p === 'history' || $p === 'view') {
         page_head('注文 ' . $o['no'] . '｜' . cfg('site'), ['nav' => $NAV_IN]);
         echo '<h1>注文 ' . h($o['no']) . ' ' . badge($o['status']) . '</h1><div class="grid2"><div class="card"><b>出荷先</b><br>' . h($o['ship_name']) . '<br>〒' . h($o['ship_zip']) . ' ' . h($o['ship_addr']) . '<br>' . h($o['ship_tel']) . '</div>'
            . '<div class="card">注文日時 ' . h($o['created']) . '<br>注文者 ' . h($o['uname'] ?? '商社が代理入力（' . (SOURCE_LABEL[$o['source']] ?? '') . '）') . '<br>希望納期 ' . h($o['want_date'] ?: '—') . '<br>御社の注文番号 ' . h($o['customer_po'] ?: '—')
-           . ($o['tracking'] ? '<br>送り状番号 <b>' . h($o['tracking']) . '</b>' : '') . '<br>備考 ' . h($o['note'] ?: '—') . '</div></div>';
+           . (ship_text($o) !== '' ? '<br><b>' . h(ship_text($o)) . '</b>' : '') . '<br>備考 ' . h($o['note'] ?: '—') . '</div></div>';
         echo '<div class="card tw"><table><tr><th>行</th><th>品番</th><th>品名</th><th class="n">数量</th><th>単位</th><th class="n">単価</th><th>単価の出どころ</th><th class="n">金額</th></tr>';
         foreach (order_lines((int)$o['id']) as $l) {
             echo '<tr><td>' . (int)$l['line'] . '</td><td>' . h($l['code']) . '</td><td>' . h($l['name']) . '</td><td class="n">' . h($l['qty'] + 0) . '</td><td>' . h($l['unit']) . '</td><td class="n">' . yen($l['price']) . '</td><td class="' . ($l['price_src'] === 'customer' ? 'src-customer' : 'note') . '">' . h(PRICE_SRC[$l['price_src']] ?? '') . '</td><td class="n">' . yen($l['amount']) . '</td></tr>';
@@ -263,8 +263,8 @@ if ($p === 'history' || $p === 'view') {
     }
     page_head('注文履歴｜' . cfg('site'), ['nav' => $NAV_IN]);
     $st = db()->prepare('SELECT o.*, u.name uname, (SELECT COUNT(*) FROM order_lines l WHERE l.order_id=o.id) n FROM orders o LEFT JOIN users u ON u.id=o.user_id WHERE o.company_id=? ORDER BY o.id DESC LIMIT 200'); $st->execute([$cid]);
-    echo '<h1>注文履歴（' . h($me['company']) . '）</h1><div class="card tw"><table><tr><th>受注番号</th><th>注文日時</th><th>状態</th><th>注文者</th><th>出荷先</th><th class="n">行</th><th class="n">合計</th></tr>';
-    foreach ($st as $o) { echo '<tr><td><a href="./?p=view&id=' . (int)$o['id'] . '">' . h($o['no']) . '</a></td><td>' . h($o['created']) . '</td><td>' . badge($o['status']) . '</td><td>' . h($o['uname'] ?? '商社が代理入力') . '</td><td>' . h($o['ship_name']) . '</td><td class="n">' . (int)$o['n'] . '</td><td class="n">' . yen($o['total']) . '</td></tr>'; }
+    echo '<h1>注文履歴（' . h($me['company']) . '）</h1><div class="card tw"><table><tr><th>受注番号</th><th>注文日時</th><th>状態</th><th>注文者</th><th>出荷先</th><th>出荷予定日</th><th class="n">行</th><th class="n">合計</th></tr>';
+    foreach ($st as $o) { echo '<tr><td><a href="./?p=view&id=' . (int)$o['id'] . '">' . h($o['no']) . '</a></td><td>' . h($o['created']) . '</td><td>' . badge($o['status']) . '</td><td>' . h($o['uname'] ?? '商社が代理入力') . '</td><td>' . h($o['ship_name']) . '</td><td>' . h($o['ship_date'] ?: '—') . '</td><td class="n">' . (int)$o['n'] . '</td><td class="n">' . yen($o['total']) . '</td></tr>'; }
     echo '</table></div>';
     page_foot(); exit;
 }

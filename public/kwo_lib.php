@@ -58,7 +58,12 @@ function db(): PDO
     $pdo = new PDO('sqlite:' . $f, null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION, PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC]);
     $pdo->exec('PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL;');
     if ($new) { schema($pdo); seed_demo($pdo); }
-    elseif (cfg('demo')) { demo_reset_if_old($pdo); }
+    else {
+        // 列の追加（2026-10-04 運送会社・出荷予定日）。既存のDBにも足す
+        $cols = array_column($pdo->query('PRAGMA table_info(orders)')->fetchAll(), 'name');
+        foreach (['carrier' => 'TEXT', 'ship_date' => 'TEXT'] as $c => $t) { if (!in_array($c, $cols, true)) { $pdo->exec("ALTER TABLE orders ADD COLUMN $c $t"); } }
+        if (cfg('demo')) { demo_reset_if_old($pdo); }
+    }
     return $pdo;
 }
 
@@ -83,7 +88,8 @@ CREATE TABLE IF NOT EXISTS shipto(
 CREATE TABLE IF NOT EXISTS orders(
   id INTEGER PRIMARY KEY, no TEXT UNIQUE, company_id INTEGER NOT NULL, user_id INTEGER NOT NULL,
   ship_name TEXT, ship_zip TEXT, ship_addr TEXT, ship_tel TEXT, want_date TEXT, customer_po TEXT, note TEXT,
-  status TEXT NOT NULL, total INTEGER, created TEXT, updated TEXT, tracking TEXT, admin_note TEXT, source TEXT DEFAULT 'web');
+  status TEXT NOT NULL, total INTEGER, created TEXT, updated TEXT, tracking TEXT, admin_note TEXT, source TEXT DEFAULT 'web',
+  carrier TEXT, ship_date TEXT);
 CREATE TABLE IF NOT EXISTS order_lines(
   order_id INTEGER NOT NULL REFERENCES orders(id), line INTEGER NOT NULL, code TEXT, name TEXT, qty REAL, unit TEXT,
   price INTEGER, price_src TEXT, amount INTEGER, PRIMARY KEY(order_id, line));
@@ -273,16 +279,38 @@ function create_order(int $cid, int $uid, int $shipto_id, array $lines, string $
     return $oid;
 }
 
-function set_status(int $oid, string $to, string $by, string $memo, string $tracking = ''): void
+function set_status(int $oid, string $to, string $by, string $memo, string $tracking = '', array $ship = []): void
 {
     $p = db();
     $st = $p->prepare('SELECT status FROM orders WHERE id=?'); $st->execute([$oid]);
     $from = (string)$st->fetchColumn();
     if (!in_array($to, KWO_NEXT[$from] ?? [], true)) { throw new RuntimeException('その状態には進められません'); }
-    $p->prepare('UPDATE orders SET status=?, updated=?' . ($tracking !== '' ? ', tracking=?' : '') . ' WHERE id=?')
-      ->execute($tracking !== '' ? [$to, now(), $tracking, $oid] : [$to, now(), $oid]);
+    $p->prepare('UPDATE orders SET status=?, updated=? WHERE id=?')->execute([$to, now(), $oid]);
+    save_ship($oid, ['tracking' => $tracking] + $ship);
     $p->prepare('INSERT INTO status_log VALUES(?,?,?,?,?)')->execute([$oid, $to, now(), $by, $memo]);
 }
+
+/** 出荷の情報（出荷予定日・運送会社・送り状番号）。どれも任意。空で来た項目は変えない */
+function save_ship(int $oid, array $ship): void
+{
+    foreach (['ship_date', 'carrier', 'tracking'] as $k) {
+        $v = trim((string)($ship[$k] ?? ''));
+        if ($v === '') { continue; }
+        if ($k === 'ship_date' && !preg_match('/^\d{4}-\d{2}-\d{2}$/', $v)) { throw new RuntimeException('出荷予定日の形が正しくありません'); }
+        db()->prepare("UPDATE orders SET $k=?, updated=? WHERE id=?")->execute([mb_substr($v, 0, 100), now(), $oid]);
+    }
+}
+
+/** 取引先に見せる出荷の情報（画面・メール用の文） */
+function ship_text(array $o): string
+{
+    $t = [];
+    if (!empty($o['ship_date'])) { $t[] = '出荷予定日 ' . $o['ship_date']; }
+    if (!empty($o['carrier'])) { $t[] = '運送会社 ' . $o['carrier']; }
+    if (!empty($o['tracking'])) { $t[] = '送り状番号 ' . $o['tracking']; }
+    return implode('／', $t);
+}
+const CARRIERS = ['ヤマト運輸', '佐川急便', '日本郵便', '西濃運輸', '福山通運', '自社便', '引き取り'];
 
 function order_lines(int $oid): array
 {
@@ -292,7 +320,7 @@ function order_lines(int $oid): array
 
 /** CSV の列（この順・この名前で固定。基幹への取り込みはこの形に合わせてもらう） */
 const CSV_HEAD = ['受注番号', '注文日時', '状態', '受注日時', '取引先コード', '取引先名', '注文者', '注文者メール', '得意先注文番号',
-    '出荷先名', '出荷先郵便番号', '出荷先住所', '出荷先電話', '希望納期', '行', '品番', '品名', '数量', '単位', '単価', '単価の出どころ', '金額', '注文合計', '備考', '送り状番号', '入力経路'];
+    '出荷先名', '出荷先郵便番号', '出荷先住所', '出荷先電話', '希望納期', '行', '品番', '品名', '数量', '単位', '単価', '単価の出どころ', '金額', '注文合計', '備考', '出荷予定日', '運送会社', '送り状番号', '入力経路'];
 
 function csv_rows(array $where = [], array $args = []): Generator
 {
@@ -305,7 +333,7 @@ function csv_rows(array $where = [], array $args = []): Generator
         foreach (order_lines((int)$o['id']) as $l) {
             yield [$o['no'], $o['created'], KWO_STATUS[$o['status']] ?? $o['status'], $o['accepted_at'] ?? '', $o['ccode'], $o['cname'], $o['uname'] ?? '（商社が代理入力）', $o['uemail'] ?? '',
                 $o['customer_po'], $o['ship_name'], $o['ship_zip'], $o['ship_addr'], $o['ship_tel'], $o['want_date'], $l['line'], $l['code'], $l['name'],
-                $l['qty'] + 0, $l['unit'], $l['price'], PRICE_SRC[$l['price_src']] ?? $l['price_src'], $l['amount'], $o['total'], $o['note'], $o['tracking'], SOURCE_LABEL[$o['source']] ?? $o['source']];
+                $l['qty'] + 0, $l['unit'], $l['price'], PRICE_SRC[$l['price_src']] ?? $l['price_src'], $l['amount'], $o['total'], $o['note'], $o['ship_date'], $o['carrier'], $o['tracking'], SOURCE_LABEL[$o['source']] ?? $o['source']];
         }
     }
 }

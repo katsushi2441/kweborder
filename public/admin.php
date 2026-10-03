@@ -26,13 +26,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if (!is_admin()) { go('admin.php'); }
         if ($a === 'status') {
             $oid = (int)$_POST['id']; $to = (string)$_POST['to'];
-            set_status($oid, $to, 'admin', trim((string)($_POST['memo'] ?? '')), trim((string)($_POST['tracking'] ?? '')));
-            $st = db()->prepare('SELECT o.no, o.tracking, u.email, u.name FROM orders o LEFT JOIN users u ON u.id=o.user_id WHERE o.id=?'); $st->execute([$oid]); $o = $st->fetch();
+            $ship = ['ship_date' => (string)($_POST['ship_date'] ?? ''), 'carrier' => (string)($_POST['carrier'] ?? '')];
+            set_status($oid, $to, 'admin', trim((string)($_POST['memo'] ?? '')), trim((string)($_POST['tracking'] ?? '')), $ship);
+            $st = db()->prepare('SELECT o.*, u.email, u.name FROM orders o LEFT JOIN users u ON u.id=o.user_id WHERE o.id=?'); $st->execute([$oid]); $o = $st->fetch();
+            $si = ship_text($o);
             $msg = ['accepted' => "ご注文 {$o['no']} を受注しました。出荷の手配を進めます。", 'preparing' => "ご注文 {$o['no']} の出荷を手配しています。",
-                    'shipped' => "ご注文 {$o['no']} を出荷しました。" . ($o['tracking'] ? "送り状番号：{$o['tracking']}" : ''), 'declined' => "ご注文 {$o['no']} は、お受けできませんでした。詳しくはご連絡します。",
+                    'shipped' => "ご注文 {$o['no']} を出荷しました。", 'declined' => "ご注文 {$o['no']} は、お受けできませんでした。詳しくはご連絡します。",
                     'cancelled' => "ご注文 {$o['no']} を取り消しました。"][$to] ?? '';
+            if ($msg && $si !== '' && in_array($to, ['accepted', 'preparing', 'shipped'], true)) { $msg .= "\n" . str_replace('／', "\n", $si); }
             if ($msg && $o['email']) { send_mail($o['email'], '【' . cfg('site') . '】' . KWO_STATUS[$to] . '（' . $o['no'] . '）', "{$o['name']} 様\n\n{$msg}\n" . base_url() . '?p=view&id=' . $oid); }
             flash('「' . KWO_STATUS[$to] . '」にしました。'); go('admin.php?p=order&id=' . $oid);
+        }
+        if ($a === 'shipinfo') {
+            // 状態を変えずに、出荷予定日・運送会社・送り状番号だけを入れる・直す
+            $oid = (int)$_POST['id'];
+            foreach (['ship_date', 'carrier', 'tracking'] as $k) {
+                if (isset($_POST[$k]) && trim((string)$_POST[$k]) === '') { db()->prepare("UPDATE orders SET $k=NULL WHERE id=?")->execute([$oid]); }
+            }
+            save_ship($oid, ['ship_date' => (string)($_POST['ship_date'] ?? ''), 'carrier' => (string)($_POST['carrier'] ?? ''), 'tracking' => (string)($_POST['tracking'] ?? '')]);
+            flash('出荷の情報を保存しました（取引先にはメールしていません）。'); go('admin.php?p=order&id=' . $oid);
         }
         if ($a === 'bulk_accept') {
             $n = 0;
@@ -182,7 +194,7 @@ if ($p === 'order') {
     echo '<p><a href="admin.php?p=orders">← 受注一覧</a></p><h1>受注 ' . h($o['no']) . ' ' . badge($o['status']) . '</h1>';
     echo '<div class="grid2"><div class="card"><b>' . h($o['cname']) . '</b>（' . h($o['ccode'] ?: 'コード未設定') . '）<br>注文者 ' . ($o['uname'] ? h($o['uname']) . '（' . h($o['uemail']) . '）' : '指定なし') . '<br>入力経路 <b>' . h(SOURCE_LABEL[$o['source']] ?? $o['source']) . '</b>' . ($o['source'] !== 'web' ? '（商社が代理入力）' : '') . '<br>注文日時 ' . h($o['created'])
        . '<br>希望納期 ' . h($o['want_date'] ?: '—') . '<br>得意先の注文番号 ' . h($o['customer_po'] ?: '—') . '<br>備考 ' . h($o['note'] ?: '—') . '</div>'
-       . '<div class="card"><b>出荷先</b><br>' . h($o['ship_name']) . '<br>〒' . h($o['ship_zip']) . ' ' . h($o['ship_addr']) . '<br>' . h($o['ship_tel']) . ($o['tracking'] ? '<br>送り状番号 <b>' . h($o['tracking']) . '</b>' : '') . '</div></div>';
+       . '<div class="card"><b>出荷先</b><br>' . h($o['ship_name']) . '<br>〒' . h($o['ship_zip']) . ' ' . h($o['ship_addr']) . '<br>' . h($o['ship_tel']) . (ship_text($o) !== '' ? '<br><b>' . h(ship_text($o)) . '</b>' : '') . '</div></div>';
     echo '<div class="card tw"><table><tr><th>行</th><th>品番</th><th>品名</th><th class="n">数量</th><th>単位</th><th class="n">単価</th><th>単価の出どころ</th><th class="n">金額</th></tr>';
     $cust = false;
     foreach (order_lines((int)$o['id']) as $l) {
@@ -193,12 +205,23 @@ if ($p === 'order') {
        . ($cust ? '<p class="note src-customer">取引先が入力した単価があります。受注済にする前に確かめてください。</p>' : '') . '</div>';
     $next = KWO_NEXT[$o['status']] ?? [];
     if ($next) {
+        $shipping = array_intersect($next, ['preparing', 'shipped']) || $o['status'] === 'accepted';
+        $carriers = '<datalist id="carriers">' . implode('', array_map(fn($c) => '<option value="' . h($c) . '">', CARRIERS)) . '</datalist>';
         echo '<h2>状態を進める</h2><div class="card"><form method="post" class="grid2">' . csrf_field() . '<input type="hidden" name="a" value="status"><input type="hidden" name="id" value="' . (int)$o['id'] . '">'
-           . '<div><label for="memo">記録に残すメモ（任意・取引先にも見える）</label><input id="memo" name="memo"></div>'
-           . (in_array('shipped', $next, true) ? '<div><label for="tracking">送り状番号（出荷済にするとき）</label><input id="tracking" name="tracking"></div>' : '<div></div>')
+           . '<div style="grid-column:1/-1"><label for="memo">記録に残すメモ（任意・取引先にも見える）</label><input id="memo" name="memo"></div>'
+           . ($shipping ? '<div><label for="ship_date">出荷予定日（任意）</label><input id="ship_date" name="ship_date" type="date" value="' . h($o['ship_date']) . '"></div>'
+              . '<div><label for="carrier">運送会社（任意）</label><input id="carrier" name="carrier" list="carriers" value="' . h($o['carrier']) . '" placeholder="選ぶか入力"></div>'
+              . '<div><label for="tracking">送り状番号（任意）</label><input id="tracking" name="tracking" value="' . h($o['tracking']) . '"></div><div></div>' . $carriers : '')
            . '<div class="row" style="grid-column:1/-1">';
         foreach ($next as $to) { echo '<button class="btn' . (in_array($to, ['cancelled', 'declined'], true) ? ' red' : '') . '" name="to" value="' . h($to) . '">' . h(KWO_STATUS[$to]) . 'にする</button>'; }
-        echo '</div></form><p class="note">' . ($o['status'] === 'requested' ? '「受注済」にした時点で注文が成立し、取引先にメールが届きます。' : '状態を変えると取引先にメールが届きます。') . '</p></div>';
+        echo '</div></form><p class="note">' . ($o['status'] === 'requested' ? '「受注済」にした時点で注文が成立し、取引先にメールが届きます。' : '状態を変えると取引先にメールが届きます。出荷予定日・運送会社・送り状番号を入れていれば、メールにも書きます。') . '</p></div>';
+    }
+    if (in_array($o['status'], ['accepted', 'preparing', 'shipped', 'done'], true)) {
+        echo '<h2>出荷の情報だけを直す（状態は変えない・メールしない）</h2><div class="card"><form method="post" class="grid2">' . csrf_field() . '<input type="hidden" name="a" value="shipinfo"><input type="hidden" name="id" value="' . (int)$o['id'] . '">'
+           . '<div><label for="sd2">出荷予定日</label><input id="sd2" name="ship_date" type="date" value="' . h($o['ship_date']) . '"></div>'
+           . '<div><label for="cr2">運送会社</label><input id="cr2" name="carrier" list="carriers2" value="' . h($o['carrier']) . '"></div>'
+           . '<div><label for="tr2">送り状番号</label><input id="tr2" name="tracking" value="' . h($o['tracking']) . '"></div><div style="align-self:end"><button class="btn ghost sm">保存</button></div>'
+           . '<datalist id="carriers2">' . implode('', array_map(fn($c) => '<option value="' . h($c) . '">', CARRIERS)) . '</datalist></form></div>';
     }
     $lg = db()->prepare('SELECT * FROM status_log WHERE order_id=? ORDER BY at'); $lg->execute([$o['id']]);
     echo '<h2>状態の記録</h2><div class="card"><ul style="margin:0;padding-left:1.2em">';
@@ -278,10 +301,10 @@ foreach ($cs as $c) { echo '<option value="' . (int)$c['id'] . '"' . ((int)($_GE
 echo '</select></div><div><label for="from">注文日（から）</label><input id="from" type="date" name="from" value="' . h($_GET['from'] ?? '') . '"></div><div><label for="to">（まで）</label><input id="to" type="date" name="to" value="' . h($_GET['to'] ?? '') . '"></div>'
    . '<div><label for="q">番号・出荷先</label><input id="q" name="q" value="' . h($_GET['q'] ?? '') . '"></div><div><button class="btn sm">絞り込む</button></div>'
    . '<div><a class="btn ghost sm" href="admin.php?p=csv&' . h(http_build_query(array_intersect_key($_GET, array_flip(['s', 'c', 'from', 'to', 'q'])))) . '">この条件でCSV</a></div></form>';
-echo '<form method="post">' . csrf_field() . '<input type="hidden" name="a" value="bulk_accept"><div class="card tw"><table><tr><th></th><th>受注番号</th><th>注文日時</th><th>状態</th><th>取引先</th><th>出荷先</th><th>希望納期</th><th class="n">行</th><th class="n">合計</th></tr>';
+echo '<form method="post">' . csrf_field() . '<input type="hidden" name="a" value="bulk_accept"><div class="card tw"><table><tr><th></th><th>受注番号</th><th>注文日時</th><th>状態</th><th>取引先</th><th>出荷先</th><th>希望納期</th><th>出荷予定日</th><th class="n">行</th><th class="n">合計</th></tr>';
 foreach ($rows as $o) {
     echo '<tr><td>' . ($o['status'] === 'requested' ? '<input type="checkbox" name="ids[]" value="' . (int)$o['id'] . '" style="width:auto" aria-label="選ぶ">' : '') . '</td><td><a href="admin.php?p=order&id=' . (int)$o['id'] . '">' . h($o['no']) . '</a></td><td>' . h($o['created']) . '</td><td>' . badge($o['status'])
-       . ($o['cust'] ? ' <span class="src-customer" title="取引先が単価を入力した行あり">単価要確認</span>' : '') . '</td><td>' . h($o['cname']) . ($o['source'] !== 'web' ? ' <span class="note">' . h(SOURCE_LABEL[$o['source']] ?? '') . '</span>' : '') . '</td><td>' . h($o['ship_name']) . '</td><td>' . h($o['want_date'] ?: '—') . '</td><td class="n">' . (int)$o['n'] . '</td><td class="n">' . yen($o['total']) . '</td></tr>';
+       . ($o['cust'] ? ' <span class="src-customer" title="取引先が単価を入力した行あり">単価要確認</span>' : '') . '</td><td>' . h($o['cname']) . ($o['source'] !== 'web' ? ' <span class="note">' . h(SOURCE_LABEL[$o['source']] ?? '') . '</span>' : '') . '</td><td>' . h($o['ship_name']) . '</td><td>' . h($o['want_date'] ?: '—') . '</td><td>' . h($o['ship_date'] ?: '—') . '</td><td class="n">' . (int)$o['n'] . '</td><td class="n">' . yen($o['total']) . '</td></tr>';
 }
 echo '</table>' . (!$rows ? '<p class="note">該当する注文はありません。</p>' : '') . '</div><p><button class="btn ghost sm">チェックした注文をまとめて受注済にする</button></p></form>';
 echo '<p class="note">CSV の列：' . h(implode('・', CSV_HEAD)) . '（明細1行が1行。BOM付き UTF-8 で Excel でも開けます）</p>';
