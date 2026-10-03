@@ -191,7 +191,8 @@ if (!$me) {
            . '<div class="card"><h2 style="margin-top:0">商社（受注する側）として試す</h2><p class="note">受注一覧・受注済にする・出荷済にする・CSV・得意先の代わりに注文を登録（代理入力）・取引先と価格の管理。</p>'
            . '<form method="post" action="admin.php">' . csrf_field() . '<input type="hidden" name="a" value="login"><input type="hidden" name="user" value="admin"><input type="hidden" name="pass" value="demo2026"><button class="btn">商社として試す</button></form>'
            . '<p class="note" style="margin-top:8px">admin ／ demo2026</p></div></div>'
-           . '<p class="note">新しい会社として登録する流れを試すなら <a href="./?p=register">新規登録</a>（デモではメールを送らず、確認のリンクを画面に出します）。</p>';
+           . '<p class="note">新しい会社として登録する流れを試すなら <a href="./?p=register">新規登録</a>（デモではメールを送らず、確認のリンクを画面に出します）。</p>'
+           . (cfg('buy_url') ? '<p><a class="btn ghost" href="' . h(cfg('buy_url')) . '">自社のサーバーに置く導入版を見る（Kurage App Store）</a></p>' : '');
     }
     echo '<div class="grid2"><div><h2>取引先の方のログイン</h2><div class="card"><form method="post">' . csrf_field() . '<input type="hidden" name="a" value="login">'
        . '<label for="email">メールアドレス</label><input id="email" name="email" type="email" required autocomplete="email">'

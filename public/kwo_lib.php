@@ -20,6 +20,7 @@ $KWO = [
     'demo'        => true,                             // true: メールを送らず画面に出す・データを1日で初期化
     'public_url'  => '',
     'track_js'    => '',
+    'buy_url'     => '',                               // 当社の公開デモだけ：導入版（商品ページ）へのリンク
 ];
 if (is_file(__DIR__ . '/kwo_config.php')) { $KWO = array_merge($KWO, (array)require __DIR__ . '/kwo_config.php'); }
 
