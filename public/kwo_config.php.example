@@ -1,0 +1,14 @@
+<?php
+// kwo_config.php にコピーして書き換える（このファイルは公開されないよう .htaccess で拒否している）
+return [
+    'site'       => 'Kurage Web Order',
+    'seller'     => '株式会社〇〇商事',              // 受注する側の会社名（画面とメールに出る）
+    'admin_user' => 'admin',
+    // パスワードは password_hash() の値で入れる: php -r 'echo password_hash("新しいパスワード", PASSWORD_DEFAULT);'
+    'admin_hash' => '',
+    'admin_pass' => '',                             // admin_hash を入れたら空にする
+    'mail_from'  => 'order@example.co.jp',          // 取引先へのメールの差出人
+    'admin_mail' => 'eigyo@example.co.jp',          // 新しい注文・取引先の登録を知らせる先
+    'demo'       => false,                          // 本番は false（メールを送る・データを消さない）
+    'public_url' => 'https://example.co.jp/order/', // メールに書くURL
+];

@@ -1,0 +1,3 @@
+public/kwo_data/*.sqlite*
+public/kwo_config.php
+outputs/

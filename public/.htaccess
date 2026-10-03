@@ -1,0 +1,8 @@
+AddHandler php-script .php
+DirectoryIndex index.php
+<Files "kwo_config.php">
+  Require all denied
+</Files>
+<Files "kwo_lib.php">
+  Require all denied
+</Files>
