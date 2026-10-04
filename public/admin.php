@@ -18,6 +18,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     try {
         if ($a === 'login') {
             if (too_many('admin')) { throw new RuntimeException('ログインの失敗が続いたため、15分ほど止めています'); }
+            if ((string)cfg('admin_hash') === '' && (string)cfg('admin_pass') === '') { throw new RuntimeException('管理者のパスワードが設定されていません。kwo_config.php に admin_hash（または admin_pass）を書いてください'); }
             $ok = hash_equals((string)cfg('admin_user'), (string)$_POST['user'])
                && (cfg('admin_hash') ? password_verify((string)$_POST['pass'], (string)cfg('admin_hash')) : hash_equals((string)cfg('admin_pass'), (string)$_POST['pass']));
             if (!$ok) { fail('admin'); throw new RuntimeException('IDかパスワードが違います'); }
